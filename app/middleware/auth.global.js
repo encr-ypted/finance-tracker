@@ -1,7 +1,7 @@
 export default defineNuxtRouteMiddleware(async (to) => {
     const user = useSupabaseUser();
 
-    const publicRoutes =  ["/login", "/register", "/confirm"];
+    const publicRoutes =  ["/login", "/register", "/confirm", "/forgot-password", "/reset-password"];
     const isPublicRoute = publicRoutes.includes(to.path);
 
     if (!user.value && !isPublicRoute){
