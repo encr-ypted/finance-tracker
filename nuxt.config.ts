@@ -13,9 +13,9 @@ export default defineNuxtConfig({
 
   app: {
     head: {
-      title: 'LifeOS',
+      title: 'Finance Tracker',
       meta: [
-        { name: 'description', content: 'Your personal Life Operating System' },
+        { name: 'description', content: 'Modern personal finance tracker' },
         { name: 'theme-color', content: '#0a0a0f' },
       ],
       link: [

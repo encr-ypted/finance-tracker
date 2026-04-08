@@ -59,7 +59,7 @@ async function handleRegister(event) {
         <UIcon name="i-heroicons-user-plus" class="text-3xl text-white" />
       </div>
       <h1 class="text-3xl font-bold tracking-tight text-white mb-2">Create Account</h1>
-      <p class="text-slate-400 text-sm">Join LifeOS and start organizing your life</p>
+      <p class="text-slate-400 text-sm">Create an account for Finance Tracker</p>
     </div>
 
     <UForm :schema="schema" :state="state" @submit="handleRegister" class="space-y-5">

@@ -56,7 +56,7 @@ async function handleLogin(event) {
         <UIcon name="i-heroicons-sparkles" class="text-3xl text-white"/>
       </div>
       <h1 class="text-3xl font-bold tracking-tight text-white mb-2">Welcome Back</h1>
-      <p class="text-slate-400 text-sm">Enter your credentials to access your LifeOS</p>
+      <p class="text-slate-400 text-sm">Enter your credentials to access Finance Tracker</p>
     </div>
 
     <UForm :schema="schema" :state="state" @submit="handleLogin" class="space-y-5">
