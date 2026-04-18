@@ -5,6 +5,7 @@ const {
   transactions,
   fetchTransactions,
   addTransaction,
+  updateTransaction,
   deleteTransaction,
   loading
 } = useTransactions()
@@ -15,6 +16,7 @@ const {
   pockets,
   transfers,
   latestSnapshotByAccount,
+  snapshots,
   transactionNetByAccount,
   transferNetByAccount,
   refresh: refreshAccounts,
@@ -23,6 +25,14 @@ const {
   addTransfer,
   addSnapshot
 } = useAccounts()
+const {
+  receivableRows,
+  totalOutstanding,
+  fetchReceivables,
+  addReceivable,
+  updateReceivable,
+  deleteReceivable
+} = useReceivables()
 const user = useSupabaseUser()
 const ApexChart = defineAsyncComponent(() => import('vue3-apexcharts'))
 
@@ -83,6 +93,30 @@ const snapshotDraft = reactive({
   market_value: '',
   note: ''
 })
+const receivableDraft = reactive({
+  person_name: '',
+  description: '',
+  amount_total: '',
+  amount_repaid: '',
+  lent_date: formatDate(today),
+  due_date: '',
+  notes: ''
+})
+const receivableError = ref('')
+const repaymentDraftById = reactive({})
+
+const editTransactionDrawerOpen = ref(false)
+const editingTransactionId = ref(null)
+const editSubmitting = ref(false)
+const editFormError = ref('')
+const editForm = reactive({
+  description: '',
+  amount: '',
+  categoryId: '',
+  accountId: '',
+  pocketId: '',
+  date: formatDate(today)
+})
 
 function formatDate(date) {
   const year = date.getFullYear()
@@ -102,6 +136,17 @@ function money(value) {
 const selectedCategory = computed(() =>
   categories.value.find((cat) => cat.id === form.categoryId)
 )
+
+const selectedEditCategory = computed(() =>
+  categories.value.find((cat) => cat.id === editForm.categoryId)
+)
+
+const filteredEditPocketsForForm = computed(() => {
+  if (!editForm.accountId) {
+    return pockets.value.filter((p) => p.scope === 'global')
+  }
+  return pockets.value.filter((p) => p.scope === 'global' || p.account_id === editForm.accountId)
+})
 
 const filteredPocketsForForm = computed(() => {
   if (!form.accountId) {
@@ -193,22 +238,50 @@ const totalExpenses = computed(() =>
 )
 
 const net = computed(() => totalIncome.value - totalExpenses.value)
+
+const snapshotHistoryByAccount = computed(() => {
+  const map = new Map()
+  for (const snap of snapshots.value) {
+    if (!map.has(snap.account_id)) map.set(snap.account_id, [])
+    map.get(snap.account_id).push(snap)
+  }
+
+  // Sort latest-first, in case the backend ordering changes or dates tie.
+  for (const [accountId, list] of map.entries()) {
+    list.sort((a, b) => {
+      const ad = a.snapshot_date ? new Date(a.snapshot_date).getTime() : 0
+      const bd = b.snapshot_date ? new Date(b.snapshot_date).getTime() : 0
+      if (bd !== ad) return bd - ad
+
+      const ac = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bc = b.created_at ? new Date(b.created_at).getTime() : 0
+      return bc - ac
+    })
+    map.set(accountId, list)
+  }
+
+  return map
+})
+
 const accountBalanceRows = computed(() => {
   return accounts.value.map((account) => {
     const txNet = Number(transactionNetByAccount.value.get(account.id) || 0)
     const transferNet = Number(transferNetByAccount.value.get(account.id) || 0)
     const ledgerBalance = Number(account.opening_balance || 0) + txNet + transferNet
 
-    const snapshot = latestSnapshotByAccount.value.get(account.id)
-    const displayBalance = account.type === 'investment' && snapshot
-      ? Number(snapshot.market_value || 0)
+    const history = snapshotHistoryByAccount.value.get(account.id) || []
+    const latest = history[0]
+    const displayBalance = account.type === 'investment' && latest
+      ? Number(latest.market_value || 0)
       : ledgerBalance
 
     return {
       ...account,
       ledgerBalance,
       displayBalance,
-      snapshotDate: snapshot?.snapshot_date || null
+      snapshotDate: latest?.snapshot_date || null,
+      snapshotCount: history.length,
+      recentSnapshots: history.slice(0, 3)
     }
   })
 })
@@ -308,8 +381,66 @@ async function handleSubmit() {
   }
 }
 
+function startEdit(txn) {
+  editFormError.value = ''
+  editingTransactionId.value = txn.id
+
+  editForm.description = txn.description || ''
+  editForm.amount = String(Math.abs(Number(txn.amount || 0)))
+  editForm.categoryId = txn.category_id || ''
+  editForm.accountId = txn.account_id || ''
+  editForm.pocketId = txn.pocket_id || ''
+  editForm.date = txn.date || formatDate(today)
+
+  editTransactionDrawerOpen.value = true
+}
+
+async function handleUpdateTransaction() {
+  editFormError.value = ''
+
+  if (!editingTransactionId.value) return
+
+  if (!editForm.description || !editForm.amount || !editForm.categoryId || !editForm.date) {
+    editFormError.value = 'Please fill description, amount, category and date.'
+    return
+  }
+
+  const amountValue = Number(editForm.amount)
+  if (!Number.isFinite(amountValue) || amountValue <= 0) {
+    editFormError.value = 'Amount must be a valid number greater than 0.'
+    return
+  }
+
+  const normalizedAmount = selectedEditCategory.value?.type === 'expense'
+    ? -Math.abs(amountValue)
+    : Math.abs(amountValue)
+
+  editSubmitting.value = true
+  try {
+    const { error } = await updateTransaction(editingTransactionId.value, {
+      description: editForm.description.trim(),
+      amount: normalizedAmount,
+      date: editForm.date,
+      category_id: editForm.categoryId,
+      account_id: editForm.accountId || null,
+      pocket_id: editForm.pocketId || null
+    })
+
+    if (error) {
+      editFormError.value = error.message || 'Failed to update transaction.'
+      return
+    }
+
+    editTransactionDrawerOpen.value = false
+    editingTransactionId.value = null
+    await Promise.all([refreshData(), refreshAccounts()])
+  } finally {
+    editSubmitting.value = false
+  }
+}
+
 async function handleRefreshAll() {
-  await Promise.all([refreshData(), refreshAccounts()])
+  await Promise.all([refreshData(), refreshAccounts(), fetchReceivables()])
 }
 
 async function handleAddAccount() {
@@ -363,6 +494,68 @@ async function handleAddSnapshot() {
   snapshotDraft.note = ''
 }
 
+async function handleAddReceivable() {
+  receivableError.value = ''
+
+  const total = Number(receivableDraft.amount_total)
+  const repaid = Number(receivableDraft.amount_repaid || 0)
+
+  if (!receivableDraft.person_name.trim()) {
+    receivableError.value = 'Please add the person name.'
+    return
+  }
+
+  if (!Number.isFinite(total) || total <= 0) {
+    receivableError.value = 'Total amount must be greater than 0.'
+    return
+  }
+
+  if (!Number.isFinite(repaid) || repaid < 0 || repaid > total) {
+    receivableError.value = 'Repaid amount must be between 0 and the total amount.'
+    return
+  }
+
+  const status = repaid >= total ? 'settled' : repaid > 0 ? 'partial' : 'open'
+  const { error } = await addReceivable({
+    person_name: receivableDraft.person_name.trim(),
+    description: receivableDraft.description.trim(),
+    amount_total: total,
+    amount_repaid: repaid,
+    lent_date: receivableDraft.lent_date,
+    due_date: receivableDraft.due_date || null,
+    notes: receivableDraft.notes.trim(),
+    status
+  })
+
+  if (error) {
+    receivableError.value = error.message || 'Failed to save receivable.'
+    return
+  }
+
+  receivableDraft.person_name = ''
+  receivableDraft.description = ''
+  receivableDraft.amount_total = ''
+  receivableDraft.amount_repaid = ''
+  receivableDraft.lent_date = formatDate(today)
+  receivableDraft.due_date = ''
+  receivableDraft.notes = ''
+}
+
+async function handleRecordRepayment(item) {
+  const nextRepaid = Number(repaymentDraftById[item.id] ?? item.repaid)
+  if (!Number.isFinite(nextRepaid) || nextRepaid < 0 || nextRepaid > item.total) return
+
+  const status = nextRepaid >= item.total ? 'settled' : nextRepaid > 0 ? 'partial' : 'open'
+  const { data, error } = await updateReceivable(item.id, {
+    amount_repaid: nextRepaid,
+    status
+  })
+
+  if (!error && data) {
+    repaymentDraftById[item.id] = String(Number(data.amount_repaid || 0))
+  }
+}
+
 async function handleAddCategory() {
   const name = categoryDraft.name.trim()
   if (!name) return
@@ -397,6 +590,7 @@ watch(
     if (!currentUser) return
     await fetchCategories()
     await refreshAccounts()
+    await fetchReceivables()
     await refreshData()
   },
   { immediate: true }
@@ -408,6 +602,16 @@ watch(
     if (!user.value) return
     await refreshData()
   }
+)
+
+watch(
+  receivableRows,
+  (rows) => {
+    for (const item of rows) {
+      repaymentDraftById[item.id] = String(Number(item.repaid || 0))
+    }
+  },
+  { immediate: true }
 )
 
 </script>
@@ -626,8 +830,24 @@ watch(
                   <span class="font-semibold">{{ money(acc.displayBalance) }}</span>
                 </div>
                 <p class="text-[11px] text-slate-500">
-                  {{ acc.type }}<span v-if="acc.tracking_start_date"> • tracking from {{ acc.tracking_start_date }}</span><span v-if="acc.snapshotDate"> • snapshot {{ acc.snapshotDate }}</span>
+                  {{ acc.type }}<span v-if="acc.tracking_start_date"> • tracking from {{ acc.tracking_start_date }}</span>
+                  <span v-if="acc.type === 'investment' && acc.snapshotCount"> • {{ acc.snapshotCount }} snapshot{{ acc.snapshotCount === 1 ? '' : 's' }}</span>
+                  <span v-if="acc.type === 'investment' && acc.snapshotDate"> • latest {{ acc.snapshotDate }}</span>
                 </p>
+
+                <div
+                  v-if="acc.type === 'investment' && acc.recentSnapshots?.length"
+                  class="mt-1 text-[11px] text-slate-500 space-y-0.5"
+                >
+                  <div
+                    v-for="s in acc.recentSnapshots"
+                    :key="s.id"
+                    class="flex items-center justify-between gap-2"
+                  >
+                    <span>{{ s.snapshot_date }}</span>
+                    <span class="font-medium">{{ money(Number(s.market_value || 0)) }}</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -722,6 +942,99 @@ watch(
         </p>
       </section>
 
+      <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-lg font-semibold">Money Owed To Me</h2>
+            <p class="text-xs text-slate-400 mt-1">Track personal loans, repayments, and remaining balances.</p>
+          </div>
+          <div class="text-right">
+            <p class="text-xs text-slate-400">Outstanding</p>
+            <p class="text-lg font-semibold text-amber-300">{{ money(totalOutstanding) }}</p>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
+            <input v-model="receivableDraft.person_name" type="text" placeholder="Person name" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="receivableDraft.description" type="text" placeholder="What they owe for" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="receivableDraft.amount_total" type="number" min="0" step="0.01" placeholder="Total amount" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="receivableDraft.amount_repaid" type="number" min="0" step="0.01" placeholder="Already repaid (optional)" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="receivableDraft.lent_date" type="date" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="receivableDraft.due_date" type="date" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="receivableDraft.notes" type="text" placeholder="Notes (optional)" class="md:col-span-2 bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+          </div>
+
+          <div class="flex items-center justify-between gap-3">
+            <p v-if="receivableError" class="text-sm text-red-400">{{ receivableError }}</p>
+            <div class="ml-auto">
+              <UButton size="sm" color="primary" @click="handleAddReceivable">Add owed amount</UButton>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="!receivableRows.length" class="text-sm text-slate-400">No money owed entries yet.</div>
+        <div v-else class="space-y-2">
+          <div
+            v-for="item in receivableRows"
+            :key="item.id"
+            class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3"
+          >
+            <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-sm font-medium truncate">{{ item.person_name }}</p>
+                <p class="text-xs text-slate-400">
+                  {{ item.description || 'Personal receivable' }} • lent {{ item.lent_date }}
+                  <span v-if="item.due_date"> • due {{ item.due_date }}</span>
+                </p>
+                <p v-if="item.notes" class="text-[11px] text-slate-500 mt-1">{{ item.notes }}</p>
+              </div>
+
+              <div class="grid grid-cols-3 gap-3 text-xs min-w-[240px]">
+                <div>
+                  <p class="text-slate-500">Total</p>
+                  <p class="font-semibold">{{ money(item.total) }}</p>
+                </div>
+                <div>
+                  <p class="text-slate-500">Repaid</p>
+                  <p class="font-semibold text-emerald-300">{{ money(item.repaid) }}</p>
+                </div>
+                <div>
+                  <p class="text-slate-500">Outstanding</p>
+                  <p class="font-semibold text-amber-300">{{ money(item.outstanding) }}</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full px-2 py-1 border border-white/10 bg-white/5 uppercase tracking-wide">
+                  {{ item.status }}
+                </span>
+              </div>
+
+              <div class="flex flex-col sm:flex-row sm:items-center gap-2">
+                <input
+                  v-model="repaymentDraftById[item.id]"
+                  type="number"
+                  min="0"
+                  :max="item.total"
+                  step="0.01"
+                  placeholder="Repaid total"
+                  class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm"
+                >
+                <UButton size="sm" color="primary" variant="soft" @click="handleRecordRepayment(item)">
+                  Update repaid
+                </UButton>
+                <UButton size="sm" color="error" variant="ghost" @click="deleteReceivable(item.id)">
+                  Delete
+                </UButton>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold">Transactions</h2>
@@ -747,6 +1060,15 @@ watch(
                 {{ money(Number(txn.amount)) }}
               </p>
               <UButton
+                size="sm"
+                color="neutral"
+                variant="ghost"
+                :disabled="editSubmitting"
+                @click="startEdit(txn)"
+              >
+                Edit
+              </UButton>
+              <UButton
                 icon="i-lucide-trash-2"
                 color="error"
                 variant="ghost"
@@ -758,6 +1080,94 @@ watch(
       </section>
 
     </div>
+
+    <UDrawer v-model:open="editTransactionDrawerOpen" :ui="{ overlay: 'bg-black/80' }" class="bg-[#0a0a0f]">
+      <template #content>
+        <div class="p-4 md:p-6 bg-[#0a0a0f] text-slate-100 border-white/10">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold">Edit Transaction</h2>
+            <UButton
+              icon="i-lucide-x"
+              variant="ghost"
+              color="neutral"
+              @click="editTransactionDrawerOpen = false; editingTransactionId = null; editFormError = ''"
+            />
+          </div>
+
+          <div class="space-y-3">
+            <input
+              v-model="editForm.description"
+              type="text"
+              placeholder="Description"
+              class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+
+            <input
+              v-model="editForm.amount"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Amount"
+              class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+
+            <select
+              v-model="editForm.categoryId"
+              class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">Select category</option>
+              <option v-for="cat in categories" :key="cat.id" :value="cat.id">
+                {{ cat.name }} ({{ cat.type }})
+              </option>
+            </select>
+
+            <select
+              v-model="editForm.accountId"
+              class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">Select account</option>
+              <option v-for="acc in accounts" :key="acc.id" :value="acc.id">{{ acc.name }}</option>
+            </select>
+
+            <select
+              v-model="editForm.pocketId"
+              class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">Pocket (optional)</option>
+              <option v-for="p in filteredEditPocketsForForm" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+
+            <input
+              v-model="editForm.date"
+              type="date"
+              class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+
+            <p v-if="editFormError" class="text-sm text-red-400">{{ editFormError }}</p>
+
+            <div class="flex items-center justify-between gap-3 pt-2">
+              <UButton
+                color="neutral"
+                variant="soft"
+                :disabled="editSubmitting"
+                @click="editTransactionDrawerOpen = false; editingTransactionId = null; editFormError = ''"
+              >
+                Cancel
+              </UButton>
+
+              <UButton
+                color="primary"
+                variant="solid"
+                :loading="editSubmitting"
+                @click="handleUpdateTransaction"
+              >
+                Save
+              </UButton>
+            </div>
+          </div>
+        </div>
+      </template>
+    </UDrawer>
 
     <UDrawer v-model:open="categoryPanelOpen" :ui="{ overlay: 'bg-black/80' }" class="bg-[#0a0a0f]">
       <template #content>

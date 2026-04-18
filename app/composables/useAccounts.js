@@ -60,6 +60,7 @@ export const useAccounts = () => {
       .select('*')
       .eq('user_id', user.value.sub)
       .order('snapshot_date', { ascending: false })
+      .order('created_at', { ascending: false })
     snapshots.value = data || []
   }
 
@@ -142,14 +143,14 @@ export const useAccounts = () => {
     if (!user.value?.sub) return null
     const { data, error } = await supabase
       .from('account_snapshots')
-      .upsert({
+      .insert({
         user_id: user.value.sub,
         account_id: payload.account_id,
         snapshot_date: payload.snapshot_date,
         market_value: Number(payload.market_value),
         note: payload.note || null
-      }, { onConflict: 'account_id,snapshot_date' })
-      .select()
+      })
+      .select('*')
       .single()
     if (error || !data) return null
     await fetchSnapshots()
@@ -159,9 +160,9 @@ export const useAccounts = () => {
   const latestSnapshotByAccount = computed(() => {
     const map = new Map()
     for (const snap of snapshots.value) {
-      if (!map.has(snap.account_id)) {
-        map.set(snap.account_id, snap)
-      }
+      // `fetchSnapshots()` orders by `snapshot_date` then `created_at` (both desc),
+      // so the first snapshot we see per account is the latest.
+      if (!map.has(snap.account_id)) map.set(snap.account_id, snap)
     }
     return map
   })

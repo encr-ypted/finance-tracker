@@ -51,6 +51,34 @@ export const useTransactions = () => {
     }
   };
 
+  // ── Update ─────────────────────────────────────────────────
+  const updateTransaction = async (txnId, txnObj) => {
+    if (!user.value?.sub) return;
+
+    const { data, error } = await supabase
+      .from('transactions')
+      .update(txnObj)
+      .eq('id', txnId)
+      .eq('user_id', user.value.sub)
+      .select('*, categories(name, color, icon, type), accounts(name)')
+      .single();
+
+    if (!error && data) {
+      const existingIdx = transactions.value.findIndex((t) => t.id === txnId);
+      if (existingIdx !== -1) transactions.value.splice(existingIdx, 1);
+
+      // Keep current list roughly sorted by date (same insertion strategy as addTransaction).
+      const insertIdx = transactions.value.findIndex((t) => t.date <= data.date);
+      if (insertIdx === -1) {
+        transactions.value.push(data);
+      } else {
+        transactions.value.splice(insertIdx, 0, data);
+      }
+    }
+
+    return { data, error };
+  };
+
   // ── Delete ─────────────────────────────────────────────────
 
   const deleteTransaction = async (txnId) => {
@@ -129,6 +157,7 @@ export const useTransactions = () => {
     loading,
     fetchTransactions,
     addTransaction,
+    updateTransaction,
     deleteTransaction,
     totalIncome,
     totalExpenses,
