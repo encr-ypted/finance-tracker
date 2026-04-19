@@ -12,6 +12,7 @@ export default defineNuxtConfig({
   ],
 
   app: {
+    baseURL: '/finance-tracker/',
     head: {
       title: 'Finance Tracker',
       meta: [
@@ -37,5 +38,13 @@ export default defineNuxtConfig({
 
   supabase: {
     redirect: false,
+  },
+
+  nitro: {
+    prerender: {
+      autoSubfolderIndex: false,
+      failOnError: false
+    },
   }
+
 })
