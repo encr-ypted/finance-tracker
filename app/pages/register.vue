@@ -35,6 +35,9 @@ async function handleRegister(event) {
     const { error } = await supabase.auth.signUp({
       email: event.data.email,
       password: event.data.password,
+      options: {
+        emailRedirectTo: `${window.location.origin}${useRuntimeConfig().app.baseURL}confirm`,
+      }
     });
     
     if (error) throw error;

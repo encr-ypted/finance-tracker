@@ -25,7 +25,7 @@ async function handleReset(event) {
 
   try {
     const { error } = await supabase.auth.resetPasswordForEmail(event.data.email, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: `${window.location.origin}${useRuntimeConfig().app.baseURL}reset-password`,
     });
 
     if (error) throw error;
