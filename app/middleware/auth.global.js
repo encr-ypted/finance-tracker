@@ -26,6 +26,6 @@ export default defineNuxtRouteMiddleware(async (to) => {
     }
 
     if (user && shouldRedirectAuth) {
-        return navigateTo("/");
+        return navigateTo("/finance");
     }
 });

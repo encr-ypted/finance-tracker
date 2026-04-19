@@ -23,7 +23,7 @@ const state = reactive({
 
 watch(user, () => {
   if (user.value) {
-     navigateTo("/");
+     navigateTo("/finance");
   }
 }, { immediate: true });
 
