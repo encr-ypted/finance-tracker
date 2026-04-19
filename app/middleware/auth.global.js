@@ -1,5 +1,12 @@
 export default defineNuxtRouteMiddleware(async (to) => {
-    const user = useSupabaseUser();
+    const supabase = useSupabaseClient();
+
+    // Must check the session directly — useSupabaseUser() is populated by
+    // an async onAuthStateChange listener in the Supabase plugin, which fires
+    // AFTER middleware has already run. getSession() awaits the client's
+    // internal initialization, so it reliably returns the stored session.
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user ?? null;
 
     const currentPath = to.path.replace(/\/$/, '') || '/';
 
@@ -14,11 +21,11 @@ export default defineNuxtRouteMiddleware(async (to) => {
     const authRedirectRoutes = ["/login", "/register", "/forgot-password"];
     const shouldRedirectAuth = authRedirectRoutes.includes(currentPath);
 
-    if (!user.value && !isPublicRoute) {
+    if (!user && !isPublicRoute) {
         return navigateTo("/login");
     }
 
-    if (user.value && shouldRedirectAuth) {
+    if (user && shouldRedirectAuth) {
         return navigateTo("/");
     }
-});
+});
