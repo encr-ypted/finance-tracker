@@ -120,6 +120,33 @@ export const useAccounts = () => {
     return data
   }
 
+  const updatePocket = async (pocketId, updates) => {
+    if (!user.value?.sub) return null
+    const { data, error } = await supabase
+      .from('pockets')
+      .update(updates)
+      .eq('id', pocketId)
+      .eq('user_id', user.value.sub)
+      .select('*')
+      .single()
+    if (error || !data) return null
+    const idx = pockets.value.findIndex((p) => p.id === pocketId)
+    if (idx !== -1) pockets.value[idx] = data
+    return data
+  }
+
+  const archivePocket = async (pocketId) => {
+    if (!user.value?.sub) return false
+    const { error } = await supabase
+      .from('pockets')
+      .update({ is_archived: true })
+      .eq('id', pocketId)
+      .eq('user_id', user.value.sub)
+    if (error) return false
+    pockets.value = pockets.value.filter((p) => p.id !== pocketId)
+    return true
+  }
+
   const addTransfer = async (payload) => {
     if (!user.value?.sub) return null
     const { data, error } = await supabase
@@ -214,6 +241,8 @@ export const useAccounts = () => {
     refresh,
     addAccount,
     addPocket,
+    updatePocket,
+    archivePocket,
     addTransfer,
     addSnapshot
   }

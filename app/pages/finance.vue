@@ -21,7 +21,6 @@ const {
   transferNetByAccount,
   refresh: refreshAccounts,
   addAccount,
-  addPocket,
   addTransfer,
   addSnapshot
 } = useAccounts()
@@ -33,6 +32,14 @@ const {
   updateReceivable,
   deleteReceivable
 } = useReceivables()
+const {
+  payableRows,
+  totalOutstanding: totalPayableOutstanding,
+  fetchPayables,
+  addPayable,
+  updatePayable,
+  deletePayable
+} = usePayables()
 const user = useSupabaseUser()
 const ApexChart = defineAsyncComponent(() => import('vue3-apexcharts'))
 
@@ -54,7 +61,6 @@ const form = reactive({
   amount: '',
   categoryId: '',
   accountId: '',
-  pocketId: '',
   date: formatDate(today)
 })
 
@@ -81,12 +87,6 @@ const transferDraft = reactive({
   date: formatDate(today),
   description: ''
 })
-const pocketDraft = reactive({
-  scope: 'global',
-  account_id: '',
-  name: '',
-  target_amount: ''
-})
 const snapshotDraft = reactive({
   account_id: '',
   snapshot_date: formatDate(today),
@@ -105,6 +105,18 @@ const receivableDraft = reactive({
 const receivableError = ref('')
 const repaymentDraftById = reactive({})
 
+const payableDraft = reactive({
+  person_name: '',
+  description: '',
+  amount_total: '',
+  amount_paid: '',
+  owed_date: formatDate(today),
+  due_date: '',
+  notes: ''
+})
+const payableError = ref('')
+const paidDraftById = reactive({})
+
 const editTransactionDrawerOpen = ref(false)
 const editingTransactionId = ref(null)
 const editSubmitting = ref(false)
@@ -114,7 +126,6 @@ const editForm = reactive({
   amount: '',
   categoryId: '',
   accountId: '',
-  pocketId: '',
   date: formatDate(today)
 })
 
@@ -140,20 +151,6 @@ const selectedCategory = computed(() =>
 const selectedEditCategory = computed(() =>
   categories.value.find((cat) => cat.id === editForm.categoryId)
 )
-
-const filteredEditPocketsForForm = computed(() => {
-  if (!editForm.accountId) {
-    return pockets.value.filter((p) => p.scope === 'global')
-  }
-  return pockets.value.filter((p) => p.scope === 'global' || p.account_id === editForm.accountId)
-})
-
-const filteredPocketsForForm = computed(() => {
-  if (!form.accountId) {
-    return pockets.value.filter((p) => p.scope === 'global')
-  }
-  return pockets.value.filter((p) => p.scope === 'global' || p.account_id === form.accountId)
-})
 
 const filteredTransactions = computed(() => {
   return transactions.value.filter((txn) => {
@@ -286,6 +283,29 @@ const accountBalanceRows = computed(() => {
   })
 })
 const visiblePockets = computed(() => pockets.value.filter((p) => !p.is_archived))
+const totalAvailableAcrossAccounts = computed(() =>
+  accountBalanceRows.value.reduce((sum, acc) => sum + Number(acc.displayBalance || 0), 0)
+)
+const totalPocketedAmount = computed(() =>
+  visiblePockets.value.reduce((sum, p) => sum + Number(p.current_amount || 0), 0)
+)
+const unpocketedAmount = computed(() => totalAvailableAcrossAccounts.value - totalPocketedAmount.value)
+const pocketedByAccount = computed(() => {
+  const map = new Map()
+  for (const p of visiblePockets.value) {
+    if (!p.account_id) continue
+    const current = Number(map.get(p.account_id) || 0)
+    map.set(p.account_id, current + Number(p.current_amount || 0))
+  }
+  return map
+})
+const accountUnpocketedRows = computed(() => {
+  return accountBalanceRows.value.map((acc) => {
+    const pocketed = Number(pocketedByAccount.value.get(acc.id) || 0)
+    const unpocketed = Number(acc.displayBalance || 0) - pocketed
+    return { ...acc, pocketed, unpocketed }
+  })
+})
 const periodLabel = computed(() => {
   if (filters.mode === 'week') return 'Current week'
   if (filters.mode === 'month') return 'Current month'
@@ -366,15 +386,13 @@ async function handleSubmit() {
       amount: normalizedAmount,
       date: form.date,
       category_id: form.categoryId,
-      account_id: form.accountId || null,
-      pocket_id: form.pocketId || null
+      account_id: form.accountId || null
     })
 
     form.description = ''
     form.amount = ''
     form.categoryId = ''
     form.accountId = ''
-    form.pocketId = ''
     await refreshAccounts()
   } finally {
     submitting.value = false
@@ -389,7 +407,6 @@ function startEdit(txn) {
   editForm.amount = String(Math.abs(Number(txn.amount || 0)))
   editForm.categoryId = txn.category_id || ''
   editForm.accountId = txn.account_id || ''
-  editForm.pocketId = txn.pocket_id || ''
   editForm.date = txn.date || formatDate(today)
 
   editTransactionDrawerOpen.value = true
@@ -422,8 +439,7 @@ async function handleUpdateTransaction() {
       amount: normalizedAmount,
       date: editForm.date,
       category_id: editForm.categoryId,
-      account_id: editForm.accountId || null,
-      pocket_id: editForm.pocketId || null
+      account_id: editForm.accountId || null
     })
 
     if (error) {
@@ -440,7 +456,7 @@ async function handleUpdateTransaction() {
 }
 
 async function handleRefreshAll() {
-  await Promise.all([refreshData(), refreshAccounts(), fetchReceivables()])
+  await Promise.all([refreshData(), refreshAccounts(), fetchReceivables(), fetchPayables()])
 }
 
 async function handleAddAccount() {
@@ -469,19 +485,6 @@ async function handleAddTransfer() {
   transferDraft.amount = ''
   transferDraft.description = ''
   await refreshAccounts()
-}
-
-async function handleAddPocket() {
-  if (!pocketDraft.name.trim()) return
-  await addPocket({
-    scope: pocketDraft.scope,
-    account_id: pocketDraft.scope === 'account' ? pocketDraft.account_id : null,
-    name: pocketDraft.name.trim(),
-    target_amount: pocketDraft.target_amount ? Number(pocketDraft.target_amount) : null
-  })
-  pocketDraft.name = ''
-  pocketDraft.target_amount = ''
-  pocketDraft.account_id = ''
 }
 
 async function handleAddSnapshot() {
@@ -556,6 +559,68 @@ async function handleRecordRepayment(item) {
   }
 }
 
+async function handleAddPayable() {
+  payableError.value = ''
+
+  const total = Number(payableDraft.amount_total)
+  const paid = Number(payableDraft.amount_paid || 0)
+
+  if (!payableDraft.person_name.trim()) {
+    payableError.value = 'Please add the person name.'
+    return
+  }
+
+  if (!Number.isFinite(total) || total <= 0) {
+    payableError.value = 'Total amount must be greater than 0.'
+    return
+  }
+
+  if (!Number.isFinite(paid) || paid < 0 || paid > total) {
+    payableError.value = 'Paid amount must be between 0 and the total amount.'
+    return
+  }
+
+  const status = paid >= total ? 'settled' : paid > 0 ? 'partial' : 'open'
+  const { error } = await addPayable({
+    person_name: payableDraft.person_name.trim(),
+    description: payableDraft.description.trim(),
+    amount_total: total,
+    amount_paid: paid,
+    owed_date: payableDraft.owed_date,
+    due_date: payableDraft.due_date || null,
+    notes: payableDraft.notes.trim(),
+    status
+  })
+
+  if (error) {
+    payableError.value = error.message || 'Failed to save payable.'
+    return
+  }
+
+  payableDraft.person_name = ''
+  payableDraft.description = ''
+  payableDraft.amount_total = ''
+  payableDraft.amount_paid = ''
+  payableDraft.owed_date = formatDate(today)
+  payableDraft.due_date = ''
+  payableDraft.notes = ''
+}
+
+async function handleRecordPayment(item) {
+  const nextPaid = Number(paidDraftById[item.id] ?? item.paid)
+  if (!Number.isFinite(nextPaid) || nextPaid < 0 || nextPaid > item.total) return
+
+  const status = nextPaid >= item.total ? 'settled' : nextPaid > 0 ? 'partial' : 'open'
+  const { data, error } = await updatePayable(item.id, {
+    amount_paid: nextPaid,
+    status
+  })
+
+  if (!error && data) {
+    paidDraftById[item.id] = String(Number(data.amount_paid || 0))
+  }
+}
+
 async function handleAddCategory() {
   const name = categoryDraft.name.trim()
   if (!name) return
@@ -591,6 +656,7 @@ watch(
     await fetchCategories()
     await refreshAccounts()
     await fetchReceivables()
+    await fetchPayables()
     await refreshData()
   },
   { immediate: true }
@@ -614,6 +680,16 @@ watch(
   { immediate: true }
 )
 
+watch(
+  payableRows,
+  (rows) => {
+    for (const item of rows) {
+      paidDraftById[item.id] = String(Number(item.paid || 0))
+    }
+  },
+  { immediate: true }
+)
+
 </script>
 
 <template>
@@ -626,6 +702,15 @@ watch(
             <p class="text-slate-300/80 text-sm mt-1">Track spending clearly, spot where your money goes, and stay in control.</p>
           </div>
           <div class="flex items-center gap-2">
+            <UButton color="neutral" variant="soft" to="/matched-betting">
+              Matched Betting
+            </UButton>
+            <UButton color="neutral" variant="soft" to="/hustles">
+              Side Hustles
+            </UButton>
+            <UButton color="neutral" variant="soft" to="/pockets">
+              Pockets
+            </UButton>
             <UButton icon="i-lucide-settings-2" color="neutral" variant="soft" @click="categoryPanelOpen = true">
               Categories
             </UButton>
@@ -666,10 +751,6 @@ watch(
             <select v-model="form.accountId" class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="">Select account</option>
               <option v-for="acc in accounts" :key="acc.id" :value="acc.id">{{ acc.name }}</option>
-            </select>
-            <select v-model="form.pocketId" class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500">
-              <option value="">Pocket (optional)</option>
-              <option v-for="p in filteredPocketsForForm" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
             <input
               v-model="form.date"
@@ -886,42 +967,19 @@ watch(
           </div>
 
           <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2">
-            <h3 class="text-sm font-medium text-slate-300">Pockets & Investment Value</h3>
-            <div class="grid grid-cols-2 gap-2">
-              <select v-model="pocketDraft.scope" class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
-                <option value="global">global pocket</option>
-                <option value="account">account pocket</option>
-              </select>
-              <select v-if="pocketDraft.scope === 'account'" v-model="pocketDraft.account_id" class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
-                <option value="">Select account</option>
-                <option v-for="acc in accounts" :key="`pock-${acc.id}`" :value="acc.id">{{ acc.name }}</option>
-              </select>
+            <h3 class="text-sm font-medium text-slate-300">Pockets (fund buckets) & Investment Value</h3>
+            <div class="rounded-lg border border-white/10 bg-white/[0.03] p-2 text-xs text-slate-300 space-y-1">
+              <p>Allocated to pockets: <span class="font-semibold">{{ money(totalPocketedAmount) }}</span></p>
+              <p>Unpocketed total: <span class="font-semibold">{{ money(unpocketedAmount) }}</span></p>
             </div>
-            <input v-model="pocketDraft.name" type="text" placeholder="Pocket name" class="w-full bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
-            <input v-model="pocketDraft.target_amount" type="number" step="0.01" placeholder="Target amount (optional)" class="w-full bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
-            <UButton size="sm" color="primary" class="w-full" @click="handleAddPocket">Add pocket</UButton>
-
-            <div v-if="visiblePockets.length" class="space-y-2 pt-1">
-              <p class="text-xs text-slate-400">Current pockets</p>
-              <div class="max-h-40 overflow-y-auto space-y-2 pr-1">
-                <div v-for="p in visiblePockets" :key="p.id" class="rounded-lg border border-white/10 p-2">
-                  <div class="flex items-center justify-between text-xs">
-                    <span class="truncate">{{ p.name }}</span>
-                    <span>{{ money(Number(p.current_amount || 0)) }}</span>
-                  </div>
-                  <p class="text-[11px] text-slate-500">
-                    {{ p.scope === 'global' ? 'global' : `account: ${accounts.find(a => a.id === p.account_id)?.name || 'Unknown'}` }}
-                    <span v-if="p.target_amount"> • target {{ money(Number(p.target_amount)) }}</span>
-                  </p>
-                  <div v-if="p.target_amount" class="mt-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
-                    <div
-                      class="h-full rounded-full bg-emerald-400"
-                      :style="{ width: `${Math.min((Number(p.current_amount || 0) / Number(p.target_amount || 1)) * 100, 100)}%` }"
-                    />
-                  </div>
-                </div>
+            <div v-if="accountUnpocketedRows.length" class="space-y-1 pt-1">
+              <p class="text-xs text-slate-400">Unpocketed by account</p>
+              <div v-for="row in accountUnpocketedRows" :key="`unp-${row.id}`" class="text-[11px] text-slate-400 flex items-center justify-between">
+                <span>{{ row.name }}</span>
+                <span>{{ money(row.unpocketed) }}</span>
               </div>
             </div>
+            <UButton size="sm" color="primary" variant="soft" class="w-full" to="/pockets">Manage pockets</UButton>
 
             <div class="border-t border-white/10 my-2"></div>
             <select v-model="snapshotDraft.account_id" class="w-full bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
@@ -1035,6 +1093,99 @@ watch(
         </div>
       </section>
 
+      <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-lg font-semibold">Money I Owe</h2>
+            <p class="text-xs text-slate-400 mt-1">Track what you owe people, payments made, and remaining balances.</p>
+          </div>
+          <div class="text-right">
+            <p class="text-xs text-slate-400">Outstanding</p>
+            <p class="text-lg font-semibold text-rose-300">{{ money(totalPayableOutstanding) }}</p>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
+            <input v-model="payableDraft.person_name" type="text" placeholder="Person name" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="payableDraft.description" type="text" placeholder="What you owe for" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="payableDraft.amount_total" type="number" min="0" step="0.01" placeholder="Total amount" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="payableDraft.amount_paid" type="number" min="0" step="0.01" placeholder="Already paid (optional)" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="payableDraft.owed_date" type="date" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="payableDraft.due_date" type="date" class="bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+            <input v-model="payableDraft.notes" type="text" placeholder="Notes (optional)" class="md:col-span-2 bg-black/30 border border-white/10 rounded-lg px-3 h-10 text-sm">
+          </div>
+
+          <div class="flex items-center justify-between gap-3">
+            <p v-if="payableError" class="text-sm text-red-400">{{ payableError }}</p>
+            <div class="ml-auto">
+              <UButton size="sm" color="primary" @click="handleAddPayable">Add payable</UButton>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="!payableRows.length" class="text-sm text-slate-400">No money owed entries yet.</div>
+        <div v-else class="space-y-2">
+          <div
+            v-for="item in payableRows"
+            :key="item.id"
+            class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3"
+          >
+            <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-sm font-medium truncate">{{ item.person_name }}</p>
+                <p class="text-xs text-slate-400">
+                  {{ item.description || 'Personal payable' }} • owed {{ item.owed_date }}
+                  <span v-if="item.due_date"> • due {{ item.due_date }}</span>
+                </p>
+                <p v-if="item.notes" class="text-[11px] text-slate-500 mt-1">{{ item.notes }}</p>
+              </div>
+
+              <div class="grid grid-cols-3 gap-3 text-xs min-w-[240px]">
+                <div>
+                  <p class="text-slate-500">Total</p>
+                  <p class="font-semibold">{{ money(item.total) }}</p>
+                </div>
+                <div>
+                  <p class="text-slate-500">Paid</p>
+                  <p class="font-semibold text-emerald-300">{{ money(item.paid) }}</p>
+                </div>
+                <div>
+                  <p class="text-slate-500">Outstanding</p>
+                  <p class="font-semibold text-rose-300">{{ money(item.outstanding) }}</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full px-2 py-1 border border-white/10 bg-white/5 uppercase tracking-wide">
+                  {{ item.status }}
+                </span>
+              </div>
+
+              <div class="flex flex-col sm:flex-row sm:items-center gap-2">
+                <input
+                  v-model="paidDraftById[item.id]"
+                  type="number"
+                  min="0"
+                  :max="item.total"
+                  step="0.01"
+                  placeholder="Paid total"
+                  class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm"
+                >
+                <UButton size="sm" color="primary" variant="soft" @click="handleRecordPayment(item)">
+                  Update paid
+                </UButton>
+                <UButton size="sm" color="error" variant="ghost" @click="deletePayable(item.id)">
+                  Delete
+                </UButton>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold">Transactions</h2>
@@ -1127,14 +1278,6 @@ watch(
             >
               <option value="">Select account</option>
               <option v-for="acc in accounts" :key="acc.id" :value="acc.id">{{ acc.name }}</option>
-            </select>
-
-            <select
-              v-model="editForm.pocketId"
-              class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="">Pocket (optional)</option>
-              <option v-for="p in filteredEditPocketsForForm" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
 
             <input
