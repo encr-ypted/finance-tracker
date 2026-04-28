@@ -234,6 +234,7 @@ export const useAccounts = () => {
     pockets,
     transfers,
     snapshots,
+    transactionRows,
     latestSnapshotByAccount,
     transactionNetByAccount,
     transferNetByAccount,

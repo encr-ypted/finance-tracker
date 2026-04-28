@@ -15,6 +15,7 @@ const {
   accounts,
   pockets,
   transfers,
+  transactionRows: accountTransactionRows,
   latestSnapshotByAccount,
   snapshots,
   transactionNetByAccount,
@@ -260,6 +261,38 @@ const snapshotHistoryByAccount = computed(() => {
   return map
 })
 
+const postSnapshotDeltaByAccount = computed(() => {
+  const map = new Map()
+  const latestByAccount = latestSnapshotByAccount.value
+
+  for (const row of accountTransactionRows.value) {
+    const snapshot = latestByAccount.get(row.account_id)
+    if (!snapshot) continue
+    if (!row.date || row.date <= snapshot.snapshot_date) continue
+    const current = Number(map.get(row.account_id) || 0)
+    map.set(row.account_id, current + Number(row.amount || 0))
+  }
+
+  for (const transfer of transfers.value) {
+    const amount = Number(transfer.amount || 0)
+    if (!amount || !transfer.date) continue
+
+    const fromSnapshot = latestByAccount.get(transfer.from_account_id)
+    if (fromSnapshot && transfer.date > fromSnapshot.snapshot_date) {
+      const fromCurrent = Number(map.get(transfer.from_account_id) || 0)
+      map.set(transfer.from_account_id, fromCurrent - amount)
+    }
+
+    const toSnapshot = latestByAccount.get(transfer.to_account_id)
+    if (toSnapshot && transfer.date > toSnapshot.snapshot_date) {
+      const toCurrent = Number(map.get(transfer.to_account_id) || 0)
+      map.set(transfer.to_account_id, toCurrent + amount)
+    }
+  }
+
+  return map
+})
+
 const accountBalanceRows = computed(() => {
   return accounts.value.map((account) => {
     const txNet = Number(transactionNetByAccount.value.get(account.id) || 0)
@@ -268,8 +301,9 @@ const accountBalanceRows = computed(() => {
 
     const history = snapshotHistoryByAccount.value.get(account.id) || []
     const latest = history[0]
+    const postSnapshotDelta = Number(postSnapshotDeltaByAccount.value.get(account.id) || 0)
     const displayBalance = account.type === 'investment' && latest
-      ? Number(latest.market_value || 0)
+      ? Number(latest.market_value || 0) + postSnapshotDelta
       : ledgerBalance
 
     return {
@@ -278,6 +312,7 @@ const accountBalanceRows = computed(() => {
       displayBalance,
       snapshotDate: latest?.snapshot_date || null,
       snapshotCount: history.length,
+      postSnapshotDelta,
       recentSnapshots: history.slice(0, 3)
     }
   })
