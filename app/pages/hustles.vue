@@ -32,6 +32,13 @@ function formatDate(date) {
   return `${year}-${month}-${day}`
 }
 
+function displayDate(value) {
+  if (!value || typeof value !== 'string') return value || ''
+  const parts = value.split('-')
+  if (parts.length !== 3) return value
+  return `${parts[2]}/${parts[1]}/${parts[0]}`
+}
+
 function money(value) {
   return new Intl.NumberFormat('en-GB', {
     style: 'currency',
@@ -372,7 +379,7 @@ watch(
                   {{ e.profit_streams?.name || 'Stream' }} • {{ e.category }}
                 </p>
                 <p class="text-xs text-slate-400">
-                  {{ e.date }}<span v-if="e.counterparty"> • {{ e.counterparty }}</span><span v-if="e.notes"> • {{ e.notes }}</span>
+                  {{ displayDate(e.date) }}<span v-if="e.counterparty"> • {{ e.counterparty }}</span><span v-if="e.notes"> • {{ e.notes }}</span>
                 </p>
               </div>
               <div class="flex items-center gap-3">

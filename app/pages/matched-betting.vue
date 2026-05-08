@@ -17,7 +17,14 @@ const {
   fetchCycles,
   addCycle,
   updateCycle,
-  deleteCycle
+  deleteCycle,
+  profitPeriods,
+  periodCapitalEvents,
+  fetchProfitPeriods,
+  addProfitPeriod,
+  updateProfitPeriod,
+  fetchPeriodCapitalEvents,
+  addPeriodCapitalEvent
 } = useMatchedBetting()
 const {
   mbStrategyOptions,
@@ -33,6 +40,13 @@ function formatDate(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function displayDate(value) {
+  if (!value || typeof value !== 'string') return value || ''
+  const parts = value.split('-')
+  if (parts.length !== 3) return value
+  return `${parts[2]}/${parts[1]}/${parts[0]}`
 }
 
 function money(value) {
@@ -93,6 +107,17 @@ const strategyRows = computed(() => {
   return rows.sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
 })
 
+const periodDraft = reactive({
+  name: '',
+  start_date: formatDate(today),
+  end_date: '',
+  starting_capital: '',
+  notes: ''
+})
+
+const capitalEventDraftByPeriod = reactive({})
+const finalProfitDraftByPeriod = reactive({})
+
 const siteProfitRows = computed(() => {
   const map = profitBySite.value
   return sites.value
@@ -102,6 +127,43 @@ const siteProfitRows = computed(() => {
 
 const ongoingCycles = computed(() => cycles.value.filter((c) => c.status === 'in_progress'))
 const completedCycles = computed(() => cycles.value.filter((c) => c.status !== 'in_progress'))
+
+const periodRows = computed(() => {
+  function sumCycles(period) {
+    const toDate = period.end_date || '9999-12-31'
+    return cycles.value
+      .filter((c) => c.date >= period.start_date && c.date <= toDate)
+      .reduce((sum, c) => sum + Number(c.net_profit || 0), 0)
+  }
+
+  function sumCapitalEvents(periodId) {
+    return periodCapitalEvents.value
+      .filter((e) => e.period_id === periodId)
+      .reduce((sum, e) => sum + (e.direction === 'in' ? Number(e.amount || 0) : -Number(e.amount || 0)), 0)
+  }
+
+  return profitPeriods.value.map((p) => {
+    const netCapitalEvents = sumCapitalEvents(p.id)
+    const effectiveCapital = Number(p.starting_capital || 0) + netCapitalEvents
+    const cycleProfit = sumCycles(p)
+    const bankrollProfitNow = bankrollTotal.value - effectiveCapital
+    const finalProfit = p.final_profit == null ? null : Number(p.final_profit)
+    const diff = finalProfit == null ? null : cycleProfit - finalProfit
+    return {
+      ...p,
+      netCapitalEvents,
+      effectiveCapital,
+      cycleProfit,
+      bankrollProfitNow,
+      ongoingDiff: cycleProfit - bankrollProfitNow,
+      finalProfit,
+      diff
+    }
+  })
+})
+
+const ongoingPeriods = computed(() => periodRows.value.filter((p) => !p.end_date))
+const completedPeriods = computed(() => periodRows.value.filter((p) => !!p.end_date))
 
 async function handleAddSite() {
   error.value = ''
@@ -163,6 +225,105 @@ async function handleAddCycle() {
   cycleDraft.freebet_pnl = ''
   cycleDraft.adjustments = ''
   cycleDraft.notes = ''
+}
+
+async function handleAddPeriod() {
+  error.value = ''
+  const startingCapital = Number(periodDraft.starting_capital || 0)
+  if (!periodDraft.name.trim()) {
+    error.value = 'Period name is required.'
+    return
+  }
+  if (!periodDraft.start_date) {
+    error.value = 'Start date is required.'
+    return
+  }
+  if (periodDraft.end_date && periodDraft.end_date < periodDraft.start_date) {
+    error.value = 'End date cannot be before start date.'
+    return
+  }
+  if (!Number.isFinite(startingCapital) || startingCapital < 0) {
+    error.value = 'Starting capital must be 0 or more.'
+    return
+  }
+  const { error: e } = await addProfitPeriod({
+    name: periodDraft.name.trim(),
+    start_date: periodDraft.start_date,
+    end_date: periodDraft.end_date || null,
+    starting_capital: startingCapital,
+    notes: periodDraft.notes.trim()
+  })
+  if (e) {
+    error.value = e.message || 'Failed to add period.'
+    return
+  }
+  periodDraft.name = ''
+  periodDraft.end_date = ''
+  periodDraft.starting_capital = ''
+  periodDraft.notes = ''
+}
+
+async function handleAddCapitalEvent(periodId) {
+  error.value = ''
+  const draft = capitalEventDraftByPeriod[periodId]
+  if (!draft) return
+  const amount = Number(draft.amount)
+  if (!draft.event_date) {
+    error.value = 'Capital event date is required.'
+    return
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    error.value = 'Capital event amount must be greater than 0.'
+    return
+  }
+  const { error: e } = await addPeriodCapitalEvent({
+    period_id: periodId,
+    event_date: draft.event_date,
+    direction: draft.direction,
+    amount,
+    note: draft.note.trim()
+  })
+  if (e) {
+    error.value = e.message || 'Failed to add capital event.'
+    return
+  }
+  draft.amount = ''
+  draft.note = ''
+}
+
+async function handleClosePeriod(periodId) {
+  error.value = ''
+  const row = periodRows.value.find((p) => p.id === periodId)
+  if (!row) return
+  const draft = finalProfitDraftByPeriod[periodId]
+  const finalProfit = Number(draft)
+  if (!Number.isFinite(finalProfit)) {
+    error.value = 'Final period profit must be a valid number.'
+    return
+  }
+  const { error: e } = await updateProfitPeriod(periodId, {
+    end_date: formatDate(today),
+    final_profit: finalProfit
+  })
+  if (e) {
+    error.value = e.message || 'Failed to close period.'
+    return
+  }
+}
+
+async function handleSaveCompletedPeriodProfit(periodId) {
+  error.value = ''
+  const draft = finalProfitDraftByPeriod[periodId]
+  const finalProfit = Number(draft)
+  if (!Number.isFinite(finalProfit)) {
+    error.value = 'Final period profit must be a valid number.'
+    return
+  }
+  const { error: e } = await updateProfitPeriod(periodId, { final_profit: finalProfit })
+  if (e) {
+    error.value = e.message || 'Failed to save final period profit.'
+    return
+  }
 }
 
 function openEditCycle(cycle) {
@@ -243,6 +404,24 @@ watch(
   { immediate: true }
 )
 
+watch(
+  profitPeriods,
+  (rows) => {
+    for (const p of rows) {
+      if (!capitalEventDraftByPeriod[p.id]) {
+        capitalEventDraftByPeriod[p.id] = {
+          event_date: formatDate(today),
+          direction: 'in',
+          amount: '',
+          note: ''
+        }
+      }
+      finalProfitDraftByPeriod[p.id] = p.final_profit == null ? '' : String(Number(p.final_profit))
+    }
+  },
+  { immediate: true }
+)
+
 async function handleUpdateBalance(site) {
   const next = Number(balanceDraftBySite[site.id])
   if (!Number.isFinite(next)) return
@@ -257,7 +436,7 @@ watch(
   user,
   async (u) => {
     if (!u) return
-    await Promise.all([fetchSites(), fetchCycles(), fetchOptions()])
+    await Promise.all([fetchSites(), fetchCycles(), fetchOptions(), fetchProfitPeriods(), fetchPeriodCapitalEvents()])
   },
   { immediate: true }
 )
@@ -289,35 +468,7 @@ watch(
         </div>
       </section>
 
-      <section class="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <div class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5 space-y-4">
-          <h2 class="text-lg font-semibold">Add site</h2>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <input v-model="siteDraft.name" type="text" placeholder="Site name (e.g. Bet365, Smarkets)" class="md:col-span-2 bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm">
-            <select v-model="siteDraft.kind" class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm">
-              <option value="bookmaker">bookmaker</option>
-              <option value="exchange">exchange</option>
-            </select>
-            <input v-model="siteDraft.current_balance" type="number" step="0.01" placeholder="Current balance" class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm">
-            <select v-model="siteDraft.status" class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm">
-              <option value="active">active</option>
-              <option value="restricted">restricted</option>
-              <option value="gubbed">gubbed</option>
-              <option value="paused">paused</option>
-            </select>
-            <select v-model="siteDraft.bet_state" class="bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm">
-              <option value="none">none</option>
-              <option value="pending_bet">pending_bet</option>
-              <option value="unplaced_free_bet">unplaced_free_bet</option>
-              <option value="qualifier_in_progress">qualifier_in_progress</option>
-            </select>
-            <input v-model="siteDraft.notes" type="text" placeholder="Notes (optional)" class="md:col-span-2 bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm">
-          </div>
-          <UButton color="primary" :loading="loadingSites" @click="handleAddSite">Add site</UButton>
-          <p v-if="error" class="text-sm text-red-400">{{ error }}</p>
-        </div>
-
-        <div class="xl:col-span-2 rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5 space-y-4">
+      <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5 space-y-4">
           <h2 class="text-lg font-semibold">Add cycle (strategy transaction)</h2>
           <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-2">
             <select v-model="cycleDraft.site_id" class="xl:col-span-2 bg-black/30 border border-white/10 rounded-xl px-3 h-11 text-sm">
@@ -352,7 +503,6 @@ watch(
           <div class="flex items-center justify-end">
             <UButton color="primary" :loading="loadingCycles" @click="handleAddCycle">Add cycle</UButton>
           </div>
-        </div>
       </section>
 
       <section class="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -416,6 +566,33 @@ watch(
           <span class="text-xs text-slate-400">{{ sites.length }}</span>
         </div>
 
+        <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
+          <h3 class="text-sm font-medium text-slate-300">Add site</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+            <input v-model="siteDraft.name" type="text" placeholder="Site name (e.g. Bet365, Smarkets)" class="xl:col-span-3 bg-black/30 border border-white/10 rounded-xl px-3 h-10 text-sm">
+            <select v-model="siteDraft.kind" class="bg-black/30 border border-white/10 rounded-xl px-3 h-10 text-sm">
+              <option value="bookmaker">bookmaker</option>
+              <option value="exchange">exchange</option>
+            </select>
+            <input v-model="siteDraft.current_balance" type="number" step="0.01" placeholder="Current balance" class="bg-black/30 border border-white/10 rounded-xl px-3 h-10 text-sm">
+            <select v-model="siteDraft.status" class="bg-black/30 border border-white/10 rounded-xl px-3 h-10 text-sm">
+              <option value="active">active</option>
+              <option value="restricted">restricted</option>
+              <option value="gubbed">gubbed</option>
+              <option value="paused">paused</option>
+            </select>
+            <select v-model="siteDraft.bet_state" class="bg-black/30 border border-white/10 rounded-xl px-3 h-10 text-sm">
+              <option value="none">none</option>
+              <option value="pending_bet">pending_bet</option>
+              <option value="unplaced_free_bet">unplaced_free_bet</option>
+              <option value="qualifier_in_progress">qualifier_in_progress</option>
+            </select>
+            <input v-model="siteDraft.notes" type="text" placeholder="Notes (optional)" class="md:col-span-2 xl:col-span-2 bg-black/30 border border-white/10 rounded-xl px-3 h-10 text-sm">
+            <UButton color="primary" :loading="loadingSites" @click="handleAddSite">Add site</UButton>
+          </div>
+          <p v-if="error" class="text-sm text-red-400">{{ error }}</p>
+        </div>
+
         <div v-if="loadingSites" class="text-sm text-slate-400">Loading sites...</div>
         <div v-else-if="!sites.length" class="text-sm text-slate-400">No sites yet.</div>
         <div v-else class="space-y-2">
@@ -472,7 +649,7 @@ watch(
               <div class="min-w-0">
                 <p class="text-sm font-medium truncate">{{ c.mb_sites?.name || 'Site' }} • {{ c.strategy }}</p>
                 <p class="text-xs text-slate-400">
-                  start {{ c.start_date || c.date }} • settle {{ c.date }} • {{ c.offer_name || 'cycle' }}
+                  start {{ displayDate(c.start_date || c.date) }} • settle {{ displayDate(c.date) }} • {{ c.offer_name || 'cycle' }}
                 </p>
               </div>
               <div class="flex items-center gap-2">
@@ -498,11 +675,11 @@ watch(
               <div class="min-w-0">
                 <p class="text-sm font-medium truncate">{{ c.mb_sites?.name || 'Site' }} • {{ c.strategy }}</p>
                 <p class="text-xs text-slate-400">
-                  start {{ c.start_date || c.date }} • settle {{ c.date }} • {{ c.offer_name || 'cycle' }} • {{ c.status }}
+                  start {{ displayDate(c.start_date || c.date) }} • settle {{ displayDate(c.date) }} • {{ c.offer_name || 'cycle' }} • {{ c.status }}
                 </p>
                 <p v-if="c.notes" class="text-[11px] text-slate-500 mt-1">{{ c.notes }}</p>
               </div>
-              <div class="grid grid-cols-4 gap-3 text-xs min-w-[320px]">
+              <div class="grid grid-cols-4 gap-3 text-xs md:min-w-[320px]">
                 <div>
                   <p class="text-slate-500">Qualifier</p>
                   <p class="font-semibold" :class="Number(c.qualifier_pnl) >= 0 ? 'text-emerald-300' : 'text-rose-300'">{{ money(Number(c.qualifier_pnl)) }}</p>
@@ -524,6 +701,118 @@ watch(
             <div class="flex justify-end gap-2 mt-2">
               <UButton size="sm" color="neutral" variant="soft" @click="openEditCycle(c)">Edit</UButton>
               <UButton size="sm" color="error" variant="ghost" @click="deleteCycle(c.id)">Delete</UButton>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-semibold">Profit Periods</h2>
+          <span class="text-xs text-slate-400">Manual capital mode</span>
+        </div>
+
+        <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
+          <h3 class="text-sm font-medium text-slate-300">Create period</h3>
+          <div class="grid grid-cols-1 md:grid-cols-5 gap-2">
+            <input
+              v-model="periodDraft.name"
+              type="text"
+              placeholder="Period name"
+              class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm"
+            >
+            <input
+              v-model="periodDraft.start_date"
+              type="date"
+              class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm"
+            >
+            <input
+              v-model="periodDraft.end_date"
+              type="date"
+              class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm"
+            >
+            <input
+              v-model="periodDraft.starting_capital"
+              type="number"
+              step="0.01"
+              placeholder="Starting capital"
+              class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm"
+            >
+            <input
+              v-model="periodDraft.notes"
+              type="text"
+              placeholder="Notes (optional)"
+              class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm"
+            >
+          </div>
+          <div class="flex justify-end">
+            <UButton size="sm" color="primary" variant="soft" @click="handleAddPeriod">Add period</UButton>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-medium text-slate-300">Ongoing periods</h3>
+            <span class="text-xs text-slate-500">{{ ongoingPeriods.length }}</span>
+          </div>
+          <div v-if="!ongoingPeriods.length" class="text-sm text-slate-400">No ongoing periods.</div>
+          <div v-else class="space-y-2">
+            <div v-for="row in ongoingPeriods" :key="row.id" class="rounded-lg border border-white/10 p-3 space-y-2">
+              <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                <div>
+                  <p class="text-sm font-medium">{{ row.name }}</p>
+                  <p class="text-xs text-slate-500">{{ displayDate(row.start_date) }} → ongoing</p>
+                </div>
+                <div class="grid grid-cols-5 gap-2 text-xs">
+                  <div><p class="text-slate-500">Total deposited</p><p class="font-semibold">{{ money(row.effectiveCapital) }}</p></div>
+                  <div><p class="text-slate-500">Cycle sum</p><p class="font-semibold" :class="row.cycleProfit >= 0 ? 'text-emerald-300' : 'text-rose-300'">{{ money(row.cycleProfit) }}</p></div>
+                  <div><p class="text-slate-500">Bankroll profit</p><p class="font-semibold" :class="row.bankrollProfitNow >= 0 ? 'text-emerald-300' : 'text-rose-300'">{{ money(row.bankrollProfitNow) }}</p></div>
+                  <div><p class="text-slate-500">Discrepancy</p><p class="font-semibold" :class="Math.abs(row.ongoingDiff) < 0.01 ? 'text-emerald-300' : 'text-rose-300'">{{ money(row.ongoingDiff) }}</p></div>
+                  <div><p class="text-slate-500">Net capital +/-</p><p class="font-semibold">{{ money(row.netCapitalEvents) }}</p></div>
+                </div>
+              </div>
+              <p class="text-[11px] text-slate-500">Discrepancy = cycle sum - bankroll profit (for active period).</p>
+              <div class="grid grid-cols-1 md:grid-cols-5 gap-2">
+                <input v-model="capitalEventDraftByPeriod[row.id].event_date" type="date" class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
+                <select v-model="capitalEventDraftByPeriod[row.id].direction" class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
+                  <option value="in">in</option>
+                  <option value="out">out</option>
+                </select>
+                <input v-model="capitalEventDraftByPeriod[row.id].amount" type="number" step="0.01" placeholder="Amount" class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
+                <input v-model="capitalEventDraftByPeriod[row.id].note" type="text" placeholder="Note (optional)" class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
+                <UButton size="sm" color="neutral" variant="soft" @click="handleAddCapitalEvent(row.id)">Add capital +/-</UButton>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <input v-model="finalProfitDraftByPeriod[row.id]" type="number" step="0.01" placeholder="Final period profit to save on close" class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
+                <UButton size="sm" color="primary" variant="solid" @click="handleClosePeriod(row.id)">Close period now</UButton>
+                <div class="text-xs text-slate-500 flex items-center">Closing sets end date to today and saves final profit.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-medium text-slate-300">Completed periods</h3>
+            <span class="text-xs text-slate-500">{{ completedPeriods.length }}</span>
+          </div>
+          <div v-if="!completedPeriods.length" class="text-sm text-slate-400">No completed periods.</div>
+          <div v-else class="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+            <div v-for="row in completedPeriods" :key="`complete-${row.id}`" class="rounded-lg border border-white/10 p-3 space-y-2">
+              <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                <div>
+                  <p class="text-sm font-medium">{{ row.name }}</p>
+                  <p class="text-xs text-slate-500">{{ displayDate(row.start_date) }} → {{ displayDate(row.end_date) }}</p>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                  <div><p class="text-slate-500">Profit made (saved)</p><p class="font-semibold">{{ row.finalProfit == null ? 'n/a' : money(row.finalProfit) }}</p></div>
+                  <div><p class="text-slate-500">Net capital +/-</p><p class="font-semibold">{{ money(row.netCapitalEvents) }}</p></div>
+                </div>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <input v-model="finalProfitDraftByPeriod[row.id]" type="number" step="0.01" placeholder="Update final period profit" class="bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
+                <UButton size="sm" color="primary" variant="soft" @click="handleSaveCompletedPeriodProfit(row.id)">Save final profit</UButton>
+              </div>
             </div>
           </div>
         </div>

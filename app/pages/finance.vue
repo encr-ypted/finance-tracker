@@ -13,7 +13,6 @@ const {
 const { categories, fetchCategories, addCategory, updateCategory, deleteCategory } = useCategories()
 const {
   accounts,
-  pockets,
   transfers,
   transactionRows: accountTransactionRows,
   latestSnapshotByAccount,
@@ -135,6 +134,13 @@ function formatDate(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function displayDate(value) {
+  if (!value || typeof value !== 'string') return value || ''
+  const parts = value.split('-')
+  if (parts.length !== 3) return value
+  return `${parts[2]}/${parts[1]}/${parts[0]}`
 }
 
 function money(value) {
@@ -317,37 +323,16 @@ const accountBalanceRows = computed(() => {
     }
   })
 })
-const visiblePockets = computed(() => pockets.value.filter((p) => !p.is_archived))
 const totalAvailableAcrossAccounts = computed(() =>
   accountBalanceRows.value.reduce((sum, acc) => sum + Number(acc.displayBalance || 0), 0)
 )
-const totalPocketedAmount = computed(() =>
-  visiblePockets.value.reduce((sum, p) => sum + Number(p.current_amount || 0), 0)
-)
-const unpocketedAmount = computed(() => totalAvailableAcrossAccounts.value - totalPocketedAmount.value)
-const pocketedByAccount = computed(() => {
-  const map = new Map()
-  for (const p of visiblePockets.value) {
-    if (!p.account_id) continue
-    const current = Number(map.get(p.account_id) || 0)
-    map.set(p.account_id, current + Number(p.current_amount || 0))
-  }
-  return map
-})
-const accountUnpocketedRows = computed(() => {
-  return accountBalanceRows.value.map((acc) => {
-    const pocketed = Number(pocketedByAccount.value.get(acc.id) || 0)
-    const unpocketed = Number(acc.displayBalance || 0) - pocketed
-    return { ...acc, pocketed, unpocketed }
-  })
-})
 const periodLabel = computed(() => {
   if (filters.mode === 'week') return 'Current week'
   if (filters.mode === 'month') return 'Current month'
   if (filters.mode === 'specificMonth') return `Month: ${filters.monthValue}`
   if (filters.mode === 'year') return 'Current year'
   if (filters.mode === 'all') return 'All time'
-  return `${filters.from} to ${filters.to}`
+  return `${displayDate(filters.from)} to ${displayDate(filters.to)}`
 })
 
 async function refreshData() {
@@ -736,7 +721,7 @@ watch(
             <h1 class="text-2xl md:text-3xl font-bold tracking-tight">Finance Tracker</h1>
             <p class="text-slate-300/80 text-sm mt-1">Track spending clearly, spot where your money goes, and stay in control.</p>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2 md:justify-end">
             <UButton color="neutral" variant="soft" to="/matched-betting">
               Matched Betting
             </UButton>
@@ -931,11 +916,14 @@ watch(
 
       <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5 space-y-4">
         <div class="flex items-center justify-between">
-          <h2 class="text-lg font-semibold">Accounts, Transfers & Pockets</h2>
-          <span class="text-xs text-slate-400">{{ accounts.length }} accounts</span>
+          <h2 class="text-lg font-semibold">Accounts & Transfers</h2>
+          <div class="text-right">
+            <p class="text-xs text-slate-400">{{ accounts.length }} accounts</p>
+            <p class="text-sm font-semibold text-emerald-300">All accounts total: {{ money(totalAvailableAcrossAccounts) }}</p>
+          </div>
         </div>
 
-        <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2">
             <h3 class="text-sm font-medium text-slate-300">Account Balances</h3>
             <div v-if="!accountBalanceRows.length" class="text-xs text-slate-500">No accounts yet.</div>
@@ -946,9 +934,9 @@ watch(
                   <span class="font-semibold">{{ money(acc.displayBalance) }}</span>
                 </div>
                 <p class="text-[11px] text-slate-500">
-                  {{ acc.type }}<span v-if="acc.tracking_start_date"> • tracking from {{ acc.tracking_start_date }}</span>
+                  {{ acc.type }}<span v-if="acc.tracking_start_date"> • tracking from {{ displayDate(acc.tracking_start_date) }}</span>
                   <span v-if="acc.type === 'investment' && acc.snapshotCount"> • {{ acc.snapshotCount }} snapshot{{ acc.snapshotCount === 1 ? '' : 's' }}</span>
-                  <span v-if="acc.type === 'investment' && acc.snapshotDate"> • latest {{ acc.snapshotDate }}</span>
+                  <span v-if="acc.type === 'investment' && acc.snapshotDate"> • latest {{ displayDate(acc.snapshotDate) }}</span>
                 </p>
 
                 <div
@@ -960,7 +948,7 @@ watch(
                     :key="s.id"
                     class="flex items-center justify-between gap-2"
                   >
-                    <span>{{ s.snapshot_date }}</span>
+                    <span>{{ displayDate(s.snapshot_date) }}</span>
                     <span class="font-medium">{{ money(Number(s.market_value || 0)) }}</span>
                   </div>
                 </div>
@@ -999,23 +987,6 @@ watch(
             </div>
             <input v-model="transferDraft.description" type="text" placeholder="Transfer note (optional)" class="w-full bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
             <UButton size="sm" color="neutral" class="w-full" @click="handleAddTransfer">Move money</UButton>
-          </div>
-
-          <div class="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2">
-            <h3 class="text-sm font-medium text-slate-300">Pockets (fund buckets) & Investment Value</h3>
-            <div class="rounded-lg border border-white/10 bg-white/[0.03] p-2 text-xs text-slate-300 space-y-1">
-              <p>Allocated to pockets: <span class="font-semibold">{{ money(totalPocketedAmount) }}</span></p>
-              <p>Unpocketed total: <span class="font-semibold">{{ money(unpocketedAmount) }}</span></p>
-            </div>
-            <div v-if="accountUnpocketedRows.length" class="space-y-1 pt-1">
-              <p class="text-xs text-slate-400">Unpocketed by account</p>
-              <div v-for="row in accountUnpocketedRows" :key="`unp-${row.id}`" class="text-[11px] text-slate-400 flex items-center justify-between">
-                <span>{{ row.name }}</span>
-                <span>{{ money(row.unpocketed) }}</span>
-              </div>
-            </div>
-            <UButton size="sm" color="primary" variant="soft" class="w-full" to="/pockets">Manage pockets</UButton>
-
             <div class="border-t border-white/10 my-2"></div>
             <select v-model="snapshotDraft.account_id" class="w-full bg-black/30 border border-white/10 rounded-lg px-3 h-9 text-sm">
               <option value="">Investment account</option>
@@ -1077,13 +1048,13 @@ watch(
               <div class="min-w-0">
                 <p class="text-sm font-medium truncate">{{ item.person_name }}</p>
                 <p class="text-xs text-slate-400">
-                  {{ item.description || 'Personal receivable' }} • lent {{ item.lent_date }}
-                  <span v-if="item.due_date"> • due {{ item.due_date }}</span>
+                  {{ item.description || 'Personal receivable' }} • lent {{ displayDate(item.lent_date) }}
+                  <span v-if="item.due_date"> • due {{ displayDate(item.due_date) }}</span>
                 </p>
                 <p v-if="item.notes" class="text-[11px] text-slate-500 mt-1">{{ item.notes }}</p>
               </div>
 
-              <div class="grid grid-cols-3 gap-3 text-xs min-w-[240px]">
+              <div class="grid grid-cols-3 gap-3 text-xs md:min-w-[240px]">
                 <div>
                   <p class="text-slate-500">Total</p>
                   <p class="font-semibold">{{ money(item.total) }}</p>
@@ -1123,6 +1094,50 @@ watch(
                   Delete
                 </UButton>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold">Transactions</h2>
+          <span class="text-xs text-slate-400">{{ filteredTransactions.length }} records</span>
+        </div>
+
+        <div v-if="loading" class="text-sm text-slate-400">Loading transactions...</div>
+        <div v-else-if="!filteredTransactions.length" class="text-sm text-slate-400">No transactions yet.</div>
+        <div v-else class="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+          <div
+            v-for="txn in filteredTransactions"
+            :key="txn.id"
+            class="rounded-xl border border-white/10 bg-black/20 p-3 flex items-center justify-between gap-3"
+          >
+            <div class="min-w-0">
+              <p class="text-sm font-medium truncate">{{ txn.description }}</p>
+              <p class="text-xs text-slate-400">
+                {{ displayDate(txn.date) }} • {{ txn.categories?.name || 'Uncategorised' }}<span v-if="txn.accounts?.name"> • {{ txn.accounts.name }}</span>
+              </p>
+            </div>
+            <div class="flex items-center gap-3">
+              <p class="text-sm font-semibold" :class="Number(txn.amount) < 0 ? 'text-rose-300' : 'text-emerald-300'">
+                {{ money(Number(txn.amount)) }}
+              </p>
+              <UButton
+                size="sm"
+                color="neutral"
+                variant="ghost"
+                :disabled="editSubmitting"
+                @click="startEdit(txn)"
+              >
+                Edit
+              </UButton>
+              <UButton
+                icon="i-lucide-trash-2"
+                color="error"
+                variant="ghost"
+                @click="deleteTransaction(txn.id)"
+              />
             </div>
           </div>
         </div>
@@ -1170,13 +1185,13 @@ watch(
               <div class="min-w-0">
                 <p class="text-sm font-medium truncate">{{ item.person_name }}</p>
                 <p class="text-xs text-slate-400">
-                  {{ item.description || 'Personal payable' }} • owed {{ item.owed_date }}
-                  <span v-if="item.due_date"> • due {{ item.due_date }}</span>
+                  {{ item.description || 'Personal payable' }} • owed {{ displayDate(item.owed_date) }}
+                  <span v-if="item.due_date"> • due {{ displayDate(item.due_date) }}</span>
                 </p>
                 <p v-if="item.notes" class="text-[11px] text-slate-500 mt-1">{{ item.notes }}</p>
               </div>
 
-              <div class="grid grid-cols-3 gap-3 text-xs min-w-[240px]">
+              <div class="grid grid-cols-3 gap-3 text-xs md:min-w-[240px]">
                 <div>
                   <p class="text-slate-500">Total</p>
                   <p class="font-semibold">{{ money(item.total) }}</p>
@@ -1216,50 +1231,6 @@ watch(
                   Delete
                 </UButton>
               </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="rounded-3xl border border-white/10 bg-white/[0.03] p-4 md:p-5">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold">Transactions</h2>
-          <span class="text-xs text-slate-400">{{ filteredTransactions.length }} records</span>
-        </div>
-
-        <div v-if="loading" class="text-sm text-slate-400">Loading transactions...</div>
-        <div v-else-if="!filteredTransactions.length" class="text-sm text-slate-400">No transactions yet.</div>
-        <div v-else class="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-          <div
-            v-for="txn in filteredTransactions"
-            :key="txn.id"
-            class="rounded-xl border border-white/10 bg-black/20 p-3 flex items-center justify-between gap-3"
-          >
-            <div class="min-w-0">
-              <p class="text-sm font-medium truncate">{{ txn.description }}</p>
-              <p class="text-xs text-slate-400">
-                {{ txn.date }} • {{ txn.categories?.name || 'Uncategorised' }}<span v-if="txn.accounts?.name"> • {{ txn.accounts.name }}</span>
-              </p>
-            </div>
-            <div class="flex items-center gap-3">
-              <p class="text-sm font-semibold" :class="Number(txn.amount) < 0 ? 'text-rose-300' : 'text-emerald-300'">
-                {{ money(Number(txn.amount)) }}
-              </p>
-              <UButton
-                size="sm"
-                color="neutral"
-                variant="ghost"
-                :disabled="editSubmitting"
-                @click="startEdit(txn)"
-              >
-                Edit
-              </UButton>
-              <UButton
-                icon="i-lucide-trash-2"
-                color="error"
-                variant="ghost"
-                @click="deleteTransaction(txn.id)"
-              />
             </div>
           </div>
         </div>
