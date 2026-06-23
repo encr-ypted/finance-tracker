@@ -401,7 +401,7 @@ async function handleSubmit() {
       ? -Math.abs(amountValue)
       : Math.abs(amountValue)
 
-    await addTransaction({
+    const { error } = await addTransaction({
       description: form.description.trim(),
       amount: normalizedAmount,
       date: form.date,
@@ -409,11 +409,15 @@ async function handleSubmit() {
       account_id: form.accountId || null
     })
 
+    if (error) {
+      formError.value = error.message || 'Failed to add transaction.'
+      return
+    }
+
     form.description = ''
     form.amount = ''
     form.categoryId = ''
     form.accountId = ''
-    await refreshAccounts()
   } finally {
     submitting.value = false
   }
@@ -469,7 +473,7 @@ async function handleUpdateTransaction() {
 
     editTransactionDrawerOpen.value = false
     editingTransactionId.value = null
-    await Promise.all([refreshData(), refreshAccounts()])
+    await refreshData()
   } finally {
     editSubmitting.value = false
   }

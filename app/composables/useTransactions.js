@@ -1,4 +1,9 @@
 import { ref, computed } from 'vue';
+import {
+  syncAccountTransactionInsert,
+  syncAccountTransactionUpdate,
+  syncAccountTransactionDelete
+} from './useAccounts'
 
 const transactions = ref([]);
 const loading = ref(false);
@@ -34,26 +39,29 @@ export const useTransactions = () => {
 
 
   const addTransaction = async (txnObj) => {
-    if (!user.value?.sub) return;
+    if (!user.value?.sub) return { data: null, error: null }
 
     const { data, error } = await supabase.from('transactions').insert({
       ...txnObj, 
       user_id: user.value.sub 
-    }).select('*, categories(name, color, icon, type), accounts(name)').single();
+    }).select('*, categories(name, color, icon, type), accounts(name)').single()
 
     if (!error && data) {
-      const idx = transactions.value.findIndex(t => t.date <= data.date);
+      const idx = transactions.value.findIndex(t => t.date <= data.date)
       if (idx === -1) {
-        transactions.value.push(data);
+        transactions.value.push(data)
       } else {
-        transactions.value.splice(idx, 0, data);
+        transactions.value.splice(idx, 0, data)
       }
+      syncAccountTransactionInsert(data)
     }
+
+    return { data, error }
   };
 
   // ── Update ─────────────────────────────────────────────────
   const updateTransaction = async (txnId, txnObj) => {
-    if (!user.value?.sub) return;
+    if (!user.value?.sub) return { data: null, error: null }
 
     const { data, error } = await supabase
       .from('transactions')
@@ -61,37 +69,41 @@ export const useTransactions = () => {
       .eq('id', txnId)
       .eq('user_id', user.value.sub)
       .select('*, categories(name, color, icon, type), accounts(name)')
-      .single();
+      .single()
 
     if (!error && data) {
-      const existingIdx = transactions.value.findIndex((t) => t.id === txnId);
-      if (existingIdx !== -1) transactions.value.splice(existingIdx, 1);
+      const existingIdx = transactions.value.findIndex((t) => t.id === txnId)
+      if (existingIdx !== -1) transactions.value.splice(existingIdx, 1)
 
-      // Keep current list roughly sorted by date (same insertion strategy as addTransaction).
-      const insertIdx = transactions.value.findIndex((t) => t.date <= data.date);
+      const insertIdx = transactions.value.findIndex((t) => t.date <= data.date)
       if (insertIdx === -1) {
-        transactions.value.push(data);
+        transactions.value.push(data)
       } else {
-        transactions.value.splice(insertIdx, 0, data);
+        transactions.value.splice(insertIdx, 0, data)
       }
+
+      syncAccountTransactionUpdate(txnId, data)
     }
 
-    return { data, error };
+    return { data, error }
   };
 
   // ── Delete ─────────────────────────────────────────────────
 
   const deleteTransaction = async (txnId) => {
-    if (!user.value?.sub) return;
+    if (!user.value?.sub) return { error: null }
 
     const { error } = await supabase.from('transactions')
       .delete()
       .eq('id', txnId)
-      .eq('user_id', user.value.sub);
+      .eq('user_id', user.value.sub)
 
     if (!error) {
-      transactions.value = transactions.value.filter(t => t.id !== txnId);
+      transactions.value = transactions.value.filter(t => t.id !== txnId)
+      syncAccountTransactionDelete(txnId)
     }
+
+    return { error }
   };
 
   // ── Aggregations ───────────────────────────────────────────

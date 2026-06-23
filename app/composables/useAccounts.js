@@ -6,6 +6,33 @@ const transfers = ref([])
 const snapshots = ref([])
 const transactionRows = ref([])
 const loading = ref(false)
+let refreshSeq = 0
+
+function toAccountTransactionRow(txn) {
+  if (!txn?.account_id) return null
+  return {
+    id: txn.id,
+    account_id: txn.account_id,
+    amount: txn.amount,
+    date: txn.date
+  }
+}
+
+export function syncAccountTransactionInsert(txn) {
+  const row = toAccountTransactionRow(txn)
+  if (!row) return
+  transactionRows.value = [...transactionRows.value, row]
+}
+
+export function syncAccountTransactionUpdate(previousId, txn) {
+  transactionRows.value = transactionRows.value.filter((row) => row.id !== previousId)
+  const row = toAccountTransactionRow(txn)
+  if (row) transactionRows.value = [...transactionRows.value, row]
+}
+
+export function syncAccountTransactionDelete(txnId) {
+  transactionRows.value = transactionRows.value.filter((row) => row.id !== txnId)
+}
 
 export const useAccounts = () => {
   const supabase = useSupabaseClient()
@@ -47,7 +74,7 @@ export const useAccounts = () => {
     if (!user.value?.sub) return
     const { data } = await supabase
       .from('transactions')
-      .select('account_id, amount, date')
+      .select('id, account_id, amount, date')
       .eq('user_id', user.value.sub)
       .not('account_id', 'is', null)
     transactionRows.value = data || []
@@ -66,17 +93,60 @@ export const useAccounts = () => {
 
   const refresh = async () => {
     if (!user.value?.sub) return
+    const seq = ++refreshSeq
     loading.value = true
     try {
-      await Promise.all([
-        fetchAccounts(),
-        fetchPockets(),
-        fetchTransfers(),
-        fetchSnapshots(),
-        fetchAccountTransactionRows()
+      const [
+        accountsData,
+        pocketsData,
+        transfersData,
+        snapshotsData,
+        transactionRowsData
+      ] = await Promise.all([
+        supabase
+          .from('accounts')
+          .select('*')
+          .eq('user_id', user.value.sub)
+          .order('created_at', { ascending: false })
+          .then(({ data }) => data || []),
+        supabase
+          .from('pockets')
+          .select('*')
+          .eq('user_id', user.value.sub)
+          .eq('is_archived', false)
+          .order('created_at', { ascending: false })
+          .then(({ data }) => data || []),
+        supabase
+          .from('account_transfers')
+          .select('*, from_account:from_account_id(name), to_account:to_account_id(name)')
+          .eq('user_id', user.value.sub)
+          .order('date', { ascending: false })
+          .order('created_at', { ascending: false })
+          .then(({ data }) => data || []),
+        supabase
+          .from('account_snapshots')
+          .select('*')
+          .eq('user_id', user.value.sub)
+          .order('snapshot_date', { ascending: false })
+          .order('created_at', { ascending: false })
+          .then(({ data }) => data || []),
+        supabase
+          .from('transactions')
+          .select('id, account_id, amount, date')
+          .eq('user_id', user.value.sub)
+          .not('account_id', 'is', null)
+          .then(({ data }) => data || [])
       ])
+
+      if (seq !== refreshSeq) return
+
+      accounts.value = accountsData
+      pockets.value = pocketsData
+      transfers.value = transfersData
+      snapshots.value = snapshotsData
+      transactionRows.value = transactionRowsData
     } finally {
-      loading.value = false
+      if (seq === refreshSeq) loading.value = false
     }
   }
 
