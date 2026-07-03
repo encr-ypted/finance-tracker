@@ -384,14 +384,14 @@ function getRangeFromMode() {
 async function handleSubmit() {
   formError.value = ''
 
-  if (!form.description || !form.amount || !form.categoryId || !form.date) {
+  if (!form.description || form.amount === '' || form.amount == null || !form.categoryId || !form.date) {
     formError.value = 'Please fill description, amount, category and date.'
     return
   }
 
   const amountValue = Number(form.amount)
-  if (!Number.isFinite(amountValue) || amountValue <= 0) {
-    formError.value = 'Amount must be a valid number greater than 0.'
+  if (!Number.isFinite(amountValue) || amountValue < 0) {
+    formError.value = 'Amount must be a valid number of 0 or more.'
     return
   }
 
@@ -441,14 +441,14 @@ async function handleUpdateTransaction() {
 
   if (!editingTransactionId.value) return
 
-  if (!editForm.description || !editForm.amount || !editForm.categoryId || !editForm.date) {
+  if (!editForm.description || editForm.amount === '' || editForm.amount == null || !editForm.categoryId || !editForm.date) {
     editFormError.value = 'Please fill description, amount, category and date.'
     return
   }
 
   const amountValue = Number(editForm.amount)
-  if (!Number.isFinite(amountValue) || amountValue <= 0) {
-    editFormError.value = 'Amount must be a valid number greater than 0.'
+  if (!Number.isFinite(amountValue) || amountValue < 0) {
+    editFormError.value = 'Amount must be a valid number of 0 or more.'
     return
   }
 
